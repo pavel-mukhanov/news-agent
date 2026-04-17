@@ -11,6 +11,7 @@ permissions:
 jobs:
   digest:
     runs-on: ubuntu-latest
+    environment: news-agent
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
