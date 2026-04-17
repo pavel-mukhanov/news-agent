@@ -1,0 +1,44 @@
+name: Video News Agent
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build video news digest
+        env:
+          NEWS_FEEDS: ${{ vars.NEWS_FEEDS }}
+          NEWS_KEYWORDS: ${{ vars.NEWS_KEYWORDS }}
+          NEWS_MAX_ITEMS: ${{ vars.NEWS_MAX_ITEMS }}
+          NEWS_OUTPUT_FILE: artifacts/video-news-digest.md
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/video_news_digest.py
+
+      - name: Publish digest as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-news-digest
+          path: artifacts/video-news-digest.md
+          if-no-files-found: error
+
+      - name: Add digest to job summary
+        run: |
+          echo "## Video Encoding News Digest" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat artifacts/video-news-digest.md >> "$GITHUB_STEP_SUMMARY"
