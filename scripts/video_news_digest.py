@@ -77,6 +77,24 @@ def get_env_list(name: str, default: list[str]) -> list[str]:
     return items or default
 
 
+def get_env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"[WARN] Invalid {name}={raw!r}. Using default {default}.", file=sys.stderr)
+        return default
+    if value < minimum:
+        print(
+            f"[WARN] {name}={value} is below minimum ({minimum}). Using default {default}.",
+            file=sys.stderr,
+        )
+        return default
+    return value
+
+
 def fetch_url(url: str, timeout: int = 25) -> str | None:
     req = urllib.request.Request(
         url,
@@ -343,7 +361,7 @@ def collect_news(feeds: list[str], keywords: list[str], max_items: int) -> list[
 def main() -> int:
     feeds = get_env_list("NEWS_FEEDS", DEFAULT_FEEDS)
     keywords = [kw.lower() for kw in get_env_list("NEWS_KEYWORDS", DEFAULT_KEYWORDS)]
-    max_items = int(os.getenv("NEWS_MAX_ITEMS", "15"))
+    max_items = get_env_int("NEWS_MAX_ITEMS", default=15, minimum=1)
     output_path = os.getenv("NEWS_OUTPUT_FILE", "video-news-digest.md")
 
     items = collect_news(feeds, keywords, max_items=max_items)
