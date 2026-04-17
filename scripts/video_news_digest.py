@@ -95,6 +95,33 @@ def get_env_int(name: str, default: int, minimum: int = 1) -> int:
     return value
 
 
+def split_text_chunks(text: str, max_len: int) -> list[str]:
+    if len(text) <= max_len:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for part in text.split("\n\n"):
+        candidate = f"{current}\n\n{part}" if current else part
+        if len(candidate) <= max_len:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+            current = ""
+        if len(part) <= max_len:
+            current = part
+            continue
+        # Fallback split for very long lines/paragraphs.
+        start = 0
+        while start < len(part):
+            end = min(start + max_len, len(part))
+            chunks.append(part[start:end])
+            start = end
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def fetch_url(url: str, timeout: int = 25) -> str | None:
     req = urllib.request.Request(
         url,
@@ -283,31 +310,29 @@ def build_digest(items: list[NewsItem], max_items: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def send_telegram(digest: str, items: list[NewsItem], token: str, chat_id: str) -> None:
-    header = "Video Encoding Digest\n"
+def send_telegram(items: list[NewsItem], token: str, chat_id: str, max_items: int) -> None:
     if not items:
-        message = header + "No relevant updates found today."
+        messages = ["Video Encoding Digest\nNo relevant updates found today."]
     else:
-        top = items[:5]
-        chunks = [header + f"Top updates: {len(items)}\n"]
-        for idx, item in enumerate(top, start=1):
-            chunks.append(f"{idx}. {item.title}\n{item.link}\n")
-        message = "\n".join(chunks)
+        lines = [f"Video Encoding Digest\nTop updates: {min(len(items), max_items)} of {len(items)}\n"]
+        for idx, item in enumerate(items[:max_items], start=1):
+            lines.append(f"{idx}. {item.title}\n{item.link}\n")
+        joined = "\n".join(lines).strip()
+        messages = split_text_chunks(joined, max_len=3900)
 
-    # Telegram message limit is 4096 chars.
-    message = message[:3900]
-
-    data = urllib.parse.urlencode({"chat_id": chat_id, "text": message, "disable_web_page_preview": "true"}).encode(
-        "utf-8"
-    )
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    req = urllib.request.Request(url, data=data, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as response:
-            if response.status >= 300:
-                raise RuntimeError(f"Telegram response status: {response.status}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[WARN] Telegram delivery failed: {exc}", file=sys.stderr)
+    for message in messages:
+        data = urllib.parse.urlencode(
+            {"chat_id": chat_id, "text": message, "disable_web_page_preview": "true"}
+        ).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=20) as response:
+                if response.status >= 300:
+                    raise RuntimeError(f"Telegram response status: {response.status}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] Telegram delivery failed: {exc}", file=sys.stderr)
+            break
 
 
 def collect_news(feeds: list[str], keywords: list[str], max_items: int) -> list[NewsItem]:
@@ -378,7 +403,7 @@ def main() -> int:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     if token and chat_id:
-        send_telegram(digest, items, token=token, chat_id=chat_id)
+        send_telegram(items, token=token, chat_id=chat_id, max_items=max_items)
         print("[INFO] Telegram notification attempted")
     else:
         print("[INFO] Telegram credentials are not set; skipping notification")
