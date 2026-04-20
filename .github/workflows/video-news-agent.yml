@@ -21,11 +21,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Restore digest state cache
+        uses: actions/cache@v4
+        with:
+          path: .news-agent
+          key: video-news-state-v1-${{ github.repository }}-${{ github.ref_name }}
+          restore-keys: |
+            video-news-state-v1-${{ github.repository }}-
+
       - name: Build video news digest
         env:
           NEWS_FEEDS: ${{ vars.NEWS_FEEDS }}
           NEWS_KEYWORDS: ${{ vars.NEWS_KEYWORDS }}
           NEWS_MAX_ITEMS: ${{ vars.NEWS_MAX_ITEMS }}
+          NEWS_MAX_AGE_DAYS: ${{ vars.NEWS_MAX_AGE_DAYS }}
+          NEWS_SEEN_FILE: .news-agent/history.json
+          NEWS_SEEN_LOOKBACK_DAYS: ${{ vars.NEWS_SEEN_LOOKBACK_DAYS }}
           NEWS_OUTPUT_FILE: artifacts/video-news-digest.md
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
