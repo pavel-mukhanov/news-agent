@@ -9,6 +9,7 @@ GitHub Actions agent that collects video encoding news, builds a digest, and can
 - Filters and ranks items by keyword matches.
 - Publishes a Markdown digest as a workflow artifact.
 - Optionally sends top items to Telegram.
+- Avoids repeated stories between runs using persisted history.
 
 ## Files
 
@@ -28,6 +29,8 @@ Go to **Settings -> Secrets and variables -> Actions -> Variables** and configur
   - Supports JSON array or comma/newline separated string.
   - If empty, defaults are used.
 - `NEWS_MAX_ITEMS` (optional): number of digest items (default `15`).
+- `NEWS_MAX_AGE_DAYS` (optional): only include items newer than this age in days (default `14`, `0` disables age filter).
+- `NEWS_SEEN_LOOKBACK_DAYS` (optional): how long sent links are remembered to avoid repeats (default `30`).
 
 Example values:
 
@@ -68,3 +71,10 @@ If secrets are missing, workflow still runs and creates artifact digest, but ski
 
 - Artifact: `video-news-digest` containing `artifacts/video-news-digest.md`.
 - Job Summary: rendered digest in run summary page.
+
+## Anti-duplicate behavior
+
+- Workflow restores `.news-agent/sent_links.json` from GitHub Actions cache.
+- Script excludes links seen within `NEWS_SEEN_LOOKBACK_DAYS`.
+- Script filters out too old entries using `NEWS_MAX_AGE_DAYS`.
+- Updated history is saved and cached for the next run.

@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Iterable
 
@@ -122,6 +122,61 @@ def split_text_chunks(text: str, max_len: int) -> list[str]:
     return chunks
 
 
+def load_seen_links(path: str, lookback_days: int) -> dict[str, datetime]:
+    if not path:
+        return {}
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=lookback_days)
+    try:
+        with open(path, encoding="utf-8") as file:
+            payload = json.load(file)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[WARN] Cannot load seen links cache {path}: {exc}", file=sys.stderr)
+        return {}
+
+    raw_links: dict[str, str] = {}
+    if isinstance(payload, dict):
+        if isinstance(payload.get("links"), dict):
+            raw_links = payload["links"]
+        else:
+            raw_links = payload
+
+    seen: dict[str, datetime] = {}
+    for raw_link, raw_time in raw_links.items():
+        normalized = normalize_url(str(raw_link)).lower()
+        if not normalized:
+            continue
+        parsed = parse_date(str(raw_time)) if raw_time else now
+        if parsed is None:
+            parsed = now
+        if parsed >= cutoff:
+            seen[normalized] = parsed
+    return seen
+
+
+def save_seen_links(path: str, seen_links: dict[str, datetime], items: list[NewsItem], lookback_days: int) -> None:
+    if not path:
+        return
+    now = datetime.now(timezone.utc)
+    for item in items:
+        key = normalize_url(item.link).lower()
+        if key:
+            seen_links[key] = now
+
+    cutoff = now - timedelta(days=lookback_days)
+    pruned = {link: ts for link, ts in seen_links.items() if ts >= cutoff}
+
+    output_dir = os.path.dirname(path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    payload = {
+        "updated_at": now.isoformat(),
+        "links": {link: ts.isoformat() for link, ts in sorted(pruned.items())},
+    }
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=True, indent=2)
 def fetch_url(url: str, timeout: int = 25) -> str | None:
     req = urllib.request.Request(
         url,
@@ -335,9 +390,19 @@ def send_telegram(items: list[NewsItem], token: str, chat_id: str, max_items: in
             break
 
 
-def collect_news(feeds: list[str], keywords: list[str], max_items: int) -> list[NewsItem]:
+def collect_news(
+    feeds: list[str],
+    keywords: list[str],
+    max_items: int,
+    seen_links: set[str] | None = None,
+    max_age_days: int | None = None,
+) -> list[NewsItem]:
     seen: set[str] = set()
     scored: list[NewsItem] = []
+    historical_seen = seen_links or set()
+    cutoff = None
+    if max_age_days is not None and max_age_days > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
     for feed_url in feeds:
         xml_text = fetch_url(feed_url)
@@ -352,9 +417,13 @@ def collect_news(feeds: list[str], keywords: list[str], max_items: int) -> list[
                 continue
 
             unique_key = link.lower()
-            if unique_key in seen:
+            if unique_key in seen or unique_key in historical_seen:
                 continue
             seen.add(unique_key)
+
+            published = parse_date(raw.get("published", ""))
+            if cutoff and published and published < cutoff:
+                continue
 
             score, matched = keyword_score(f"{title} {summary}", keywords)
             if score <= 0:
@@ -364,7 +433,7 @@ def collect_news(feeds: list[str], keywords: list[str], max_items: int) -> list[
                 NewsItem(
                     title=title,
                     link=link,
-                    published=parse_date(raw.get("published", "")),
+                    published=published,
                     published_raw=raw.get("published", ""),
                     summary=summary,
                     source=source,
@@ -380,17 +449,28 @@ def collect_news(feeds: list[str], keywords: list[str], max_items: int) -> list[
         ),
         reverse=True,
     )
-    return scored[: max(max_items * 3, max_items)]
+    return scored[: max(max_items * 5, max_items)]
 
 
 def main() -> int:
     feeds = get_env_list("NEWS_FEEDS", DEFAULT_FEEDS)
     keywords = [kw.lower() for kw in get_env_list("NEWS_KEYWORDS", DEFAULT_KEYWORDS)]
     max_items = get_env_int("NEWS_MAX_ITEMS", default=15, minimum=1)
+    max_age_days = get_env_int("NEWS_MAX_AGE_DAYS", default=14, minimum=0)
+    seen_lookback_days = get_env_int("NEWS_SEEN_LOOKBACK_DAYS", default=30, minimum=1)
+    seen_file = os.getenv("NEWS_SEEN_FILE", ".cache/video-news-seen.json").strip()
     output_path = os.getenv("NEWS_OUTPUT_FILE", "video-news-digest.md")
+    seen_links = load_seen_links(seen_file, lookback_days=seen_lookback_days)
 
-    items = collect_news(feeds, keywords, max_items=max_items)
-    digest = build_digest(items, max_items=max_items)
+    items = collect_news(
+        feeds,
+        keywords,
+        max_items=max_items,
+        seen_links=set(seen_links.keys()),
+        max_age_days=max_age_days,
+    )
+    selected_items = items[:max_items]
+    digest = build_digest(selected_items, max_items=max_items)
 
     output_dir = os.path.dirname(output_path)
     if output_dir:
@@ -398,15 +478,18 @@ def main() -> int:
     with open(output_path, "w", encoding="utf-8") as file:
         file.write(digest)
     print(f"[INFO] Digest saved to {output_path}")
-    print(f"[INFO] Relevant items: {len(items)}")
+    print(f"[INFO] Relevant items: {len(selected_items)}")
 
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     if token and chat_id:
-        send_telegram(items, token=token, chat_id=chat_id, max_items=max_items)
+        send_telegram(selected_items, token=token, chat_id=chat_id, max_items=max_items)
         print("[INFO] Telegram notification attempted")
     else:
         print("[INFO] Telegram credentials are not set; skipping notification")
+
+    save_seen_links(seen_file, seen_links, selected_items, lookback_days=seen_lookback_days)
+    print(f"[INFO] Seen links cache updated: {seen_file}")
 
     return 0
 

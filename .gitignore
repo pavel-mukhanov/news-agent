@@ -1,2 +1,4 @@
 video-news-digest.md
 __pycache__/
+.cache/
+.news-agent/
