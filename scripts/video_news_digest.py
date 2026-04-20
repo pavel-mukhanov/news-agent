@@ -177,8 +177,6 @@ def save_seen_links(path: str, seen_links: dict[str, datetime], items: list[News
     }
     with open(path, "w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=True, indent=2)
-
-
 def fetch_url(url: str, timeout: int = 25) -> str | None:
     req = urllib.request.Request(
         url,
