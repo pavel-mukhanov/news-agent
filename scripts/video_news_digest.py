@@ -126,7 +126,9 @@ def load_seen_links(path: str, lookback_days: int) -> dict[str, datetime]:
     if not path:
         return {}
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=lookback_days)
+    cutoff = None
+    if lookback_days > 0:
+        cutoff = now - timedelta(days=lookback_days)
     try:
         with open(path, encoding="utf-8") as file:
             payload = json.load(file)
@@ -151,7 +153,7 @@ def load_seen_links(path: str, lookback_days: int) -> dict[str, datetime]:
         parsed = parse_date(str(raw_time)) if raw_time else now
         if parsed is None:
             parsed = now
-        if parsed >= cutoff:
+        if cutoff is None or parsed >= cutoff:
             seen[normalized] = parsed
     return seen
 
@@ -165,18 +167,24 @@ def save_seen_links(path: str, seen_links: dict[str, datetime], items: list[News
         if key:
             seen_links[key] = now
 
-    cutoff = now - timedelta(days=lookback_days)
-    pruned = {link: ts for link, ts in seen_links.items() if ts >= cutoff}
+    if lookback_days > 0:
+        cutoff = now - timedelta(days=lookback_days)
+        links_to_save = {link: ts for link, ts in seen_links.items() if ts >= cutoff}
+    else:
+        # Keep all previously sent links when lookback is disabled.
+        links_to_save = dict(seen_links)
 
     output_dir = os.path.dirname(path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
     payload = {
         "updated_at": now.isoformat(),
-        "links": {link: ts.isoformat() for link, ts in sorted(pruned.items())},
+        "links": {link: ts.isoformat() for link, ts in sorted(links_to_save.items())},
     }
     with open(path, "w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=True, indent=2)
+
+
 def fetch_url(url: str, timeout: int = 25) -> str | None:
     req = urllib.request.Request(
         url,
@@ -457,7 +465,7 @@ def main() -> int:
     keywords = [kw.lower() for kw in get_env_list("NEWS_KEYWORDS", DEFAULT_KEYWORDS)]
     max_items = get_env_int("NEWS_MAX_ITEMS", default=15, minimum=1)
     max_age_days = get_env_int("NEWS_MAX_AGE_DAYS", default=14, minimum=0)
-    seen_lookback_days = get_env_int("NEWS_SEEN_LOOKBACK_DAYS", default=30, minimum=1)
+    seen_lookback_days = get_env_int("NEWS_SEEN_LOOKBACK_DAYS", default=0, minimum=0)
     seen_file = os.getenv("NEWS_SEEN_FILE", ".cache/video-news-seen.json").strip()
     output_path = os.getenv("NEWS_OUTPUT_FILE", "video-news-digest.md")
     seen_links = load_seen_links(seen_file, lookback_days=seen_lookback_days)

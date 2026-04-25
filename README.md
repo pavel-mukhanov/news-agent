@@ -31,6 +31,7 @@ Go to **Settings -> Secrets and variables -> Actions -> Variables** and configur
 - `NEWS_MAX_ITEMS` (optional): number of digest items (default `15`).
 - `NEWS_MAX_AGE_DAYS` (optional): only include items newer than this age in days (default `14`, `0` disables age filter).
 - `NEWS_SEEN_LOOKBACK_DAYS` (optional): how long sent links are remembered to avoid repeats (default `30`).
+- `NEWS_SEEN_KEEP_ALL` (optional): keep all previously sent links forever (`true` by default). Set `false` to enable lookback pruning.
 
 Example values:
 
@@ -74,7 +75,9 @@ If secrets are missing, workflow still runs and creates artifact digest, but ski
 
 ## Anti-duplicate behavior
 
-- Workflow restores `.news-agent/sent_links.json` from GitHub Actions cache.
-- Script excludes links seen within `NEWS_SEEN_LOOKBACK_DAYS`.
+- Workflow restores `.news-agent/history.json` from GitHub Actions cache.
+- Script excludes links that were seen before.
+- By default, all seen links are kept forever (`NEWS_SEEN_KEEP_ALL=true`) to maximize uniqueness between runs.
+- Optional: set `NEWS_SEEN_KEEP_ALL=false` to prune history by `NEWS_SEEN_LOOKBACK_DAYS`.
 - Script filters out too old entries using `NEWS_MAX_AGE_DAYS`.
 - Updated history is saved and cached for the next run.
