@@ -126,9 +126,27 @@ def split_text_chunks(text: str, max_len: int) -> list[str]:
     return chunks
 
 
-def load_seen_links(path: str, lookback_days: int) -> dict[str, datetime]:
+def normalize_title(value: str) -> str:
+    text = strip_html(value).lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return clean_whitespace(text)
+
+
+def news_signature(title: str, source: str) -> str:
+    normalized_title = normalize_title(title)
+    if not normalized_title:
+        return ""
+    normalized_source = normalize_domain(source)
+    if not normalized_source:
+        normalized_source = normalize_title(source)
+    if normalized_source:
+        return f"{normalized_source}|{normalized_title}"
+    return normalized_title
+
+
+def load_seen_links(path: str, lookback_days: int) -> tuple[dict[str, datetime], dict[str, datetime]]:
     if not path:
-        return {}
+        return {}, {}
     now = datetime.now(timezone.utc)
     cutoff = None
     if lookback_days > 0:
@@ -137,17 +155,24 @@ def load_seen_links(path: str, lookback_days: int) -> dict[str, datetime]:
         with open(path, encoding="utf-8") as file:
             payload = json.load(file)
     except FileNotFoundError:
-        return {}
+        return {}, {}
     except (OSError, json.JSONDecodeError) as exc:
         print(f"[WARN] Cannot load seen links cache {path}: {exc}", file=sys.stderr)
-        return {}
+        return {}, {}
 
     raw_links: dict[str, str] = {}
+    raw_signatures: dict[str, str] = {}
     if isinstance(payload, dict):
         if isinstance(payload.get("links"), dict):
             raw_links = payload["links"]
         else:
-            raw_links = payload
+            raw_links = {
+                key: value
+                for key, value in payload.items()
+                if key not in {"updated_at", "signatures"} and isinstance(key, str)
+            }
+        if isinstance(payload.get("signatures"), dict):
+            raw_signatures = payload["signatures"]
 
     seen: dict[str, datetime] = {}
     for raw_link, raw_time in raw_links.items():
@@ -159,10 +184,27 @@ def load_seen_links(path: str, lookback_days: int) -> dict[str, datetime]:
             parsed = now
         if cutoff is None or parsed >= cutoff:
             seen[normalized] = parsed
-    return seen
+
+    seen_signatures: dict[str, datetime] = {}
+    for raw_signature, raw_time in raw_signatures.items():
+        signature = clean_whitespace(str(raw_signature)).lower()
+        if not signature:
+            continue
+        parsed = parse_date(str(raw_time)) if raw_time else now
+        if parsed is None:
+            parsed = now
+        if cutoff is None or parsed >= cutoff:
+            seen_signatures[signature] = parsed
+    return seen, seen_signatures
 
 
-def save_seen_links(path: str, seen_links: dict[str, datetime], items: list[NewsItem], lookback_days: int) -> None:
+def save_seen_links(
+    path: str,
+    seen_links: dict[str, datetime],
+    seen_signatures: dict[str, datetime],
+    items: list[NewsItem],
+    lookback_days: int,
+) -> None:
     if not path:
         return
     now = datetime.now(timezone.utc)
@@ -170,13 +212,18 @@ def save_seen_links(path: str, seen_links: dict[str, datetime], items: list[News
         key = normalize_url(item.link).lower()
         if key:
             seen_links[key] = now
+        signature = news_signature(item.title, item.source)
+        if signature:
+            seen_signatures[signature] = now
 
     if lookback_days > 0:
         cutoff = now - timedelta(days=lookback_days)
         links_to_save = {link: ts for link, ts in seen_links.items() if ts >= cutoff}
+        signatures_to_save = {signature: ts for signature, ts in seen_signatures.items() if ts >= cutoff}
     else:
         # Keep all previously sent links when lookback is disabled.
         links_to_save = dict(seen_links)
+        signatures_to_save = dict(seen_signatures)
 
     output_dir = os.path.dirname(path)
     if output_dir:
@@ -184,6 +231,7 @@ def save_seen_links(path: str, seen_links: dict[str, datetime], items: list[News
     payload = {
         "updated_at": now.isoformat(),
         "links": {link: ts.isoformat() for link, ts in sorted(links_to_save.items())},
+        "signatures": {signature: ts.isoformat() for signature, ts in sorted(signatures_to_save.items())},
     }
     with open(path, "w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=True, indent=2)
@@ -275,6 +323,12 @@ def normalize_domain(value: str) -> str:
     if host.startswith("www."):
         host = host[4:]
     return host
+
+
+def news_signature(title: str, source: str) -> str:
+    title_norm = re.sub(r"[^a-z0-9]+", "", title.lower())
+    source_norm = re.sub(r"[^a-z0-9]+", "", source.lower())
+    return f"{source_norm}:{title_norm}".strip(":")
 
 
 def is_blocked_item(link: str, source: str, blocked_domains: set[str]) -> bool:
@@ -413,13 +467,14 @@ def build_digest(items: list[NewsItem], max_items: int) -> str:
 
 def send_telegram(items: list[NewsItem], token: str, chat_id: str, max_items: int) -> None:
     if not items:
-        messages = ["Video Encoding Digest\nNo relevant updates found today."]
-    else:
-        lines = [f"Video Encoding Digest\nTop updates: {min(len(items), max_items)} of {len(items)}\n"]
-        for idx, item in enumerate(items[:max_items], start=1):
-            lines.append(f"{idx}. {item.title}\n{item.link}\n")
-        joined = "\n".join(lines).strip()
-        messages = split_text_chunks(joined, max_len=3900)
+        print("[INFO] No new items; skipping Telegram send")
+        return
+
+    lines = [f"Video Encoding Digest\nTop updates: {min(len(items), max_items)} of {len(items)}\n"]
+    for idx, item in enumerate(items[:max_items], start=1):
+        lines.append(f"{idx}. {item.title}\n{item.link}\n")
+    joined = "\n".join(lines).strip()
+    messages = split_text_chunks(joined, max_len=3900)
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     for message in messages:
@@ -441,12 +496,15 @@ def collect_news(
     keywords: list[str],
     max_items: int,
     seen_links: set[str] | None = None,
+    seen_signatures: set[str] | None = None,
     max_age_days: int | None = None,
     blocked_domains: set[str] | None = None,
 ) -> list[NewsItem]:
     seen: set[str] = set()
+    seen_title_source: set[str] = set()
     scored: list[NewsItem] = []
     historical_seen = seen_links or set()
+    historical_signatures = seen_signatures or set()
     blocked = blocked_domains or set()
     cutoff = None
     if max_age_days is not None and max_age_days > 0:
@@ -466,10 +524,12 @@ def collect_news(
             if is_blocked_item(link, source, blocked):
                 continue
 
+            signature = news_signature(title, source)
             unique_key = link.lower()
             if unique_key in seen or unique_key in historical_seen:
                 continue
-            seen.add(unique_key)
+            if signature and (signature in seen_title_source or signature in historical_signatures):
+                continue
 
             published = parse_date(raw.get("published", ""))
             if cutoff and published and published < cutoff:
@@ -491,6 +551,9 @@ def collect_news(
                     matched_keywords=matched,
                 )
             )
+            seen.add(unique_key)
+            if signature:
+                seen_title_source.add(signature)
 
     scored.sort(
         key=lambda item: (
@@ -511,13 +574,14 @@ def main() -> int:
     seen_lookback_days = get_env_int("NEWS_SEEN_LOOKBACK_DAYS", default=0, minimum=0)
     seen_file = os.getenv("NEWS_SEEN_FILE", ".cache/video-news-seen.json").strip()
     output_path = os.getenv("NEWS_OUTPUT_FILE", "video-news-digest.md")
-    seen_links = load_seen_links(seen_file, lookback_days=seen_lookback_days)
+    seen_links, seen_signatures = load_seen_links(seen_file, lookback_days=seen_lookback_days)
 
     items = collect_news(
         feeds,
         keywords,
         max_items=max_items,
         seen_links=set(seen_links.keys()),
+        seen_signatures=set(seen_signatures.keys()),
         max_age_days=max_age_days,
         blocked_domains=blocked_domains,
     )
@@ -534,13 +598,21 @@ def main() -> int:
 
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if token and chat_id:
+    if token and chat_id and selected_items:
         send_telegram(selected_items, token=token, chat_id=chat_id, max_items=max_items)
         print("[INFO] Telegram notification attempted")
+    elif token and chat_id:
+        print("[INFO] No new items for Telegram; skipping notification")
     else:
         print("[INFO] Telegram credentials are not set; skipping notification")
 
-    save_seen_links(seen_file, seen_links, selected_items, lookback_days=seen_lookback_days)
+    save_seen_links(
+        seen_file,
+        seen_links,
+        seen_signatures,
+        selected_items,
+        lookback_days=seen_lookback_days,
+    )
     print(f"[INFO] Seen links cache updated: {seen_file}")
 
     return 0

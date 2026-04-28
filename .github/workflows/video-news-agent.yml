@@ -33,10 +33,11 @@ jobs:
         env:
           NEWS_FEEDS: ${{ vars.NEWS_FEEDS }}
           NEWS_KEYWORDS: ${{ vars.NEWS_KEYWORDS }}
+          NEWS_BLOCKED_DOMAINS: ${{ vars.NEWS_BLOCKED_DOMAINS }}
           NEWS_MAX_ITEMS: ${{ vars.NEWS_MAX_ITEMS }}
           NEWS_MAX_AGE_DAYS: ${{ vars.NEWS_MAX_AGE_DAYS }}
           NEWS_SEEN_FILE: .news-agent/history.json
-          NEWS_KEEP_ALL_SEEN: ${{ vars.NEWS_KEEP_ALL_SEEN }}
+          NEWS_SEEN_LOOKBACK_DAYS: ${{ vars.NEWS_SEEN_LOOKBACK_DAYS }}
           NEWS_OUTPUT_FILE: artifacts/video-news-digest.md
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
