@@ -49,6 +49,10 @@ DEFAULT_KEYWORDS = [
     "webrtc",
 ]
 
+DEFAULT_BLOCKED_DOMAINS = [
+    "fathomjournal.org",
+]
+
 
 @dataclass
 class NewsItem:
@@ -260,6 +264,40 @@ def normalize_url(url: str) -> str:
     return urllib.parse.urlunparse(cleaned)
 
 
+def normalize_domain(value: str) -> str:
+    candidate = value.strip().lower()
+    if not candidate:
+        return ""
+    parsed = urllib.parse.urlparse(candidate)
+    if not parsed.netloc and "://" not in candidate and " " not in candidate and "." in candidate:
+        parsed = urllib.parse.urlparse(f"https://{candidate}")
+    host = (parsed.netloc or "").lower().strip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def is_blocked_item(link: str, source: str, blocked_domains: set[str]) -> bool:
+    if not blocked_domains:
+        return False
+    link_host = normalize_domain(link)
+    source_host = normalize_domain(source)
+    source_slug = re.sub(r"[^a-z0-9]+", "", source.lower())
+
+    for raw_domain in blocked_domains:
+        domain = normalize_domain(raw_domain)
+        if not domain:
+            continue
+        domain_root = domain.split(".", 1)[0]
+        if link_host and (link_host == domain or link_host.endswith(f".{domain}")):
+            return True
+        if source_host and (source_host == domain or source_host.endswith(f".{domain}")):
+            return True
+        if source_slug and domain_root and domain_root in source_slug:
+            return True
+    return False
+
+
 def parse_feed(xml_text: str, source_url: str) -> list[dict[str, str]]:
     try:
         root = ET.fromstring(xml_text)
@@ -404,10 +442,12 @@ def collect_news(
     max_items: int,
     seen_links: set[str] | None = None,
     max_age_days: int | None = None,
+    blocked_domains: set[str] | None = None,
 ) -> list[NewsItem]:
     seen: set[str] = set()
     scored: list[NewsItem] = []
     historical_seen = seen_links or set()
+    blocked = blocked_domains or set()
     cutoff = None
     if max_age_days is not None and max_age_days > 0:
         cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
@@ -422,6 +462,8 @@ def collect_news(
             summary = strip_html(raw.get("summary", ""))
             source = strip_html(raw.get("source", "")) or urllib.parse.urlparse(feed_url).netloc
             if not title or not link:
+                continue
+            if is_blocked_item(link, source, blocked):
                 continue
 
             unique_key = link.lower()
@@ -463,6 +505,7 @@ def collect_news(
 def main() -> int:
     feeds = get_env_list("NEWS_FEEDS", DEFAULT_FEEDS)
     keywords = [kw.lower() for kw in get_env_list("NEWS_KEYWORDS", DEFAULT_KEYWORDS)]
+    blocked_domains = {domain.lower() for domain in get_env_list("NEWS_BLOCKED_DOMAINS", DEFAULT_BLOCKED_DOMAINS)}
     max_items = get_env_int("NEWS_MAX_ITEMS", default=15, minimum=1)
     max_age_days = get_env_int("NEWS_MAX_AGE_DAYS", default=14, minimum=0)
     seen_lookback_days = get_env_int("NEWS_SEEN_LOOKBACK_DAYS", default=0, minimum=0)
@@ -476,6 +519,7 @@ def main() -> int:
         max_items=max_items,
         seen_links=set(seen_links.keys()),
         max_age_days=max_age_days,
+        blocked_domains=blocked_domains,
     )
     selected_items = items[:max_items]
     digest = build_digest(selected_items, max_items=max_items)

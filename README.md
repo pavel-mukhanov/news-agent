@@ -32,6 +32,7 @@ Go to **Settings -> Secrets and variables -> Actions -> Variables** and configur
 - `NEWS_MAX_AGE_DAYS` (optional): only include items newer than this age in days (default `14`, `0` disables age filter).
 - `NEWS_SEEN_LOOKBACK_DAYS` (optional): how long sent links are remembered to avoid repeats (default `30`).
 - `NEWS_SEEN_KEEP_ALL` (optional): keep all previously sent links forever (`true` by default). Set `false` to enable lookback pruning.
+- `NEWS_BLOCKED_DOMAINS` (optional): comma/newline list of domains to exclude (default includes `fathomjournal.org`).
 
 Example values:
 
@@ -80,4 +81,5 @@ If secrets are missing, workflow still runs and creates artifact digest, but ski
 - By default, all seen links are kept forever (`NEWS_SEEN_KEEP_ALL=true`) to maximize uniqueness between runs.
 - Optional: set `NEWS_SEEN_KEEP_ALL=false` to prune history by `NEWS_SEEN_LOOKBACK_DAYS`.
 - Script filters out too old entries using `NEWS_MAX_AGE_DAYS`.
+- Script excludes blocked domains via `NEWS_BLOCKED_DOMAINS` (includes `fathomjournal.org` by default).
 - Updated history is saved and cached for the next run.
