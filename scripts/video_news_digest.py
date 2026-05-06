@@ -22,7 +22,6 @@ DEFAULT_FEEDS = [
     "https://news.google.com/rss/search?q=ffmpeg+OR+x264+OR+x265+OR+SVT-AV1+OR+libaom",
     "https://news.ycombinator.com/rss",
     "https://www.v-nova.com/feed/",
-    "https://github.com/FFmpeg/FFmpeg/releases.atom",
     "https://github.com/AOMediaCodec/libavif/releases.atom",
     "https://github.com/xiph/rav1e/releases.atom",
 ]
@@ -51,6 +50,10 @@ DEFAULT_KEYWORDS = [
 
 DEFAULT_BLOCKED_DOMAINS = [
     "fathomjournal.org",
+]
+
+DEFAULT_BLOCKED_URL_PREFIXES = [
+    "https://github.com/ffmpeg/ffmpeg/releases/tag/",
 ]
 
 
@@ -144,6 +147,13 @@ def news_signature(title: str, source: str) -> str:
     return normalized_title
 
 
+def title_signature(title: str) -> str:
+    normalized_title = normalize_title(title)
+    if not normalized_title:
+        return ""
+    return f"title|{normalized_title}"
+
+
 def load_seen_links(path: str, lookback_days: int) -> tuple[dict[str, datetime], dict[str, datetime]]:
     if not path:
         return {}, {}
@@ -215,6 +225,9 @@ def save_seen_links(
         signature = news_signature(item.title, item.source)
         if signature:
             seen_signatures[signature] = now
+        title_key = title_signature(item.title)
+        if title_key:
+            seen_signatures[title_key] = now
 
     if lookback_days > 0:
         cutoff = now - timedelta(days=lookback_days)
@@ -325,12 +338,6 @@ def normalize_domain(value: str) -> str:
     return host
 
 
-def news_signature(title: str, source: str) -> str:
-    title_norm = re.sub(r"[^a-z0-9]+", "", title.lower())
-    source_norm = re.sub(r"[^a-z0-9]+", "", source.lower())
-    return f"{source_norm}:{title_norm}".strip(":")
-
-
 def is_blocked_item(link: str, source: str, blocked_domains: set[str]) -> bool:
     if not blocked_domains:
         return False
@@ -348,6 +355,19 @@ def is_blocked_item(link: str, source: str, blocked_domains: set[str]) -> bool:
         if source_host and (source_host == domain or source_host.endswith(f".{domain}")):
             return True
         if source_slug and domain_root and domain_root in source_slug:
+            return True
+    return False
+
+
+def is_blocked_link(link: str, blocked_prefixes: set[str]) -> bool:
+    if not blocked_prefixes:
+        return False
+    normalized_link = normalize_url(link).lower()
+    if not normalized_link:
+        return False
+    for prefix in blocked_prefixes:
+        normalized_prefix = normalize_url(prefix).lower()
+        if normalized_prefix and normalized_link.startswith(normalized_prefix):
             return True
     return False
 
@@ -499,13 +519,16 @@ def collect_news(
     seen_signatures: set[str] | None = None,
     max_age_days: int | None = None,
     blocked_domains: set[str] | None = None,
+    blocked_url_prefixes: set[str] | None = None,
 ) -> list[NewsItem]:
     seen: set[str] = set()
     seen_title_source: set[str] = set()
+    seen_titles: set[str] = set()
     scored: list[NewsItem] = []
     historical_seen = seen_links or set()
     historical_signatures = seen_signatures or set()
     blocked = blocked_domains or set()
+    blocked_prefixes = blocked_url_prefixes or set()
     cutoff = None
     if max_age_days is not None and max_age_days > 0:
         cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
@@ -523,12 +546,17 @@ def collect_news(
                 continue
             if is_blocked_item(link, source, blocked):
                 continue
+            if is_blocked_link(link, blocked_prefixes):
+                continue
 
             signature = news_signature(title, source)
+            title_key = title_signature(title)
             unique_key = link.lower()
             if unique_key in seen or unique_key in historical_seen:
                 continue
             if signature and (signature in seen_title_source or signature in historical_signatures):
+                continue
+            if title_key and (title_key in seen_titles or title_key in historical_signatures):
                 continue
 
             published = parse_date(raw.get("published", ""))
@@ -554,6 +582,8 @@ def collect_news(
             seen.add(unique_key)
             if signature:
                 seen_title_source.add(signature)
+            if title_key:
+                seen_titles.add(title_key)
 
     scored.sort(
         key=lambda item: (
@@ -569,7 +599,13 @@ def main() -> int:
     feeds = get_env_list("NEWS_FEEDS", DEFAULT_FEEDS)
     keywords = [kw.lower() for kw in get_env_list("NEWS_KEYWORDS", DEFAULT_KEYWORDS)]
     blocked_domains = {domain.lower() for domain in get_env_list("NEWS_BLOCKED_DOMAINS", DEFAULT_BLOCKED_DOMAINS)}
-    max_items = get_env_int("NEWS_MAX_ITEMS", default=15, minimum=1)
+    blocked_url_prefixes = {
+        prefix.lower() for prefix in get_env_list("NEWS_BLOCKED_URL_PREFIXES", DEFAULT_BLOCKED_URL_PREFIXES)
+    }
+    requested_max_items = get_env_int("NEWS_MAX_ITEMS", default=1, minimum=1)
+    max_items = 1
+    if requested_max_items != 1:
+        print("[INFO] NEWS_MAX_ITEMS is ignored; sending at most one new item per run.")
     max_age_days = get_env_int("NEWS_MAX_AGE_DAYS", default=14, minimum=0)
     seen_lookback_days = get_env_int("NEWS_SEEN_LOOKBACK_DAYS", default=0, minimum=0)
     seen_file = os.getenv("NEWS_SEEN_FILE", ".cache/video-news-seen.json").strip()
@@ -584,6 +620,7 @@ def main() -> int:
         seen_signatures=set(seen_signatures.keys()),
         max_age_days=max_age_days,
         blocked_domains=blocked_domains,
+        blocked_url_prefixes=blocked_url_prefixes,
     )
     selected_items = items[:max_items]
     digest = build_digest(selected_items, max_items=max_items)
